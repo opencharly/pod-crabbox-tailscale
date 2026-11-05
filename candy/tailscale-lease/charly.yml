@@ -1,0 +1,112 @@
+# tailscale-lease — the tailscale daemon and CLI added by `pod-crabbox-tailscale`.
+#
+# Sources:
+#   - CONTAINERD-IMAGES.md §2, the `pod-crabbox-tailscale` row: `tailscale` AND
+#     `tailscaled`, plus a `tailscaled.service` drop-in setting
+#     `TS_DEBUG_DISABLE_UDP_GSO=1` (the libkrunfw TSI socket deadlock).
+#   - CONTAINERD-IMAGES.md §2's source note: `tailscale` — LIBKRUN.md §7 (the TSI
+#     `TS_DEBUG_DISABLE_UDP_GSO` measurement).
+#   - opencharly/layer-tailscale (the `tailscale` Arch package, the enabled
+#     `tailscaled.service`).
+#   - `pacman -Si tailscale` (run 2026-11-05): extra/tailscale 1.104.2-1, URL
+#     https://tailscale.com; its file list carries /usr/bin/tailscale,
+#     /usr/bin/tailscaled and /usr/lib/systemd/system/tailscaled.service.
+tailscale-lease:
+    candy:
+        description: |
+            Tailscale on a Crabbox lease. Installs Arch's `tailscale` package (the
+            `tailscale` CLI and the `tailscaled` daemon), enables
+            `tailscaled.service`, and installs a drop-in setting
+            `TS_DEBUG_DISABLE_UDP_GSO=1` on the unit. That variable is the
+            libkrunfw TSI workaround: a TSI lease's proxied UDP path deadlocks
+            tailscaled's UDP GSO batching, and forcing GSO off is the documented
+            remedy (CONTAINERD-IMAGES.md §2, LIBKRUN.md §7). The setting is a
+            GSO toggle, not a network mode, so a non-TSI lease is unaffected.
+            Joining a tailnet (`tailscale up`) is a runtime action and is not
+            baked here.
+        # The lease SSH port is the base image's own contract. An OCI/imported
+        # base does not carry its candy chain's ports across the boundary, so the
+        # published number is restated here (one number, taken from the base
+        # image's label).
+        port:
+            - 2222
+        distro:
+            arch:
+                package:
+                    # CONTAINERD-IMAGES.md §2: the package ships both binaries.
+                    - tailscale
+        plan:
+            # `write:` creates the parent directories it needs; the drop-in is
+            # read by systemd only when `tailscaled.service` starts.
+            - run: write the tailscaled drop-in that disables UDP GSO for TSI leases
+              write: /etc/systemd/system/tailscaled.service.d/10-tsi-gso.conf
+              mode: "0644"
+              run_as: root
+              content: |
+                # Managed by the opencharly pod-crabbox-tailscale candy.
+                #
+                # CONTAINERD-IMAGES.md §2 / LIBKRUN.md §7: under a libkrun TSI
+                # lease tailscaled's UDP GSO batching reaches the VMM's proxied
+                # socket path and deadlocks. Disabling GSO keeps the daemon on
+                # the userspace path TSI can carry.
+                [Service]
+                Environment=TS_DEBUG_DISABLE_UDP_GSO=1
+            - run: create the multi-user wants directory
+              mkdir: /etc/systemd/system/multi-user.target.wants
+              run_as: root
+              mode: "0755"
+            - run: enable tailscaled.service at boot
+              link: /etc/systemd/system/multi-user.target.wants/tailscaled.service
+              target: /usr/lib/systemd/system/tailscaled.service
+              run_as: root
+            # ------------------------------------------------------------------
+            # The variant's own surface.
+            # ------------------------------------------------------------------
+            - check: the tailscale CLI is installed and executable
+              id: tailscale-cli-binary
+              exit_status: 0
+              command: test -x /usr/bin/tailscale
+            - check: the tailscaled daemon binary is installed, so a consumer's `exec /usr/bin/tailscaled` resolves
+              id: tailscale-daemon-binary
+              exit_status: 0
+              command: test -x /usr/bin/tailscaled
+            - check: the tailscale CLI reports its version without contacting the daemon
+              id: tailscale-version
+              exit_status: 0
+              command: tailscale version
+            - check: the tailscale package is installed from Arch's extra repository
+              id: tailscale-package
+              exit_status: 0
+              command: pacman -Q tailscale
+            - check: the tailscaled drop-in disables UDP GSO
+              id: tailscale-tsi-gso-drop-in
+              exit_status: 0
+              command: >-
+                  grep -qx 'Environment=TS_DEBUG_DISABLE_UDP_GSO=1'
+                  /etc/systemd/system/tailscaled.service.d/10-tsi-gso.conf
+            - check: tailscaled.service is enabled at boot
+              id: tailscale-service-enabled
+              exit_status: 0
+              command: >-
+                  test "$(readlink /etc/systemd/system/multi-user.target.wants/tailscaled.service)" = /usr/lib/systemd/system/tailscaled.service
+            # ------------------------------------------------------------------
+            # The inherited lease contract, probed at THIS image's boundary.
+            # ------------------------------------------------------------------
+            - check: the inherited lease SSH contract is present (sshd, bootstrap, readiness hook)
+              id: tailscale-lease-binaries
+              exit_status: 0
+              command: >-
+                  test -x /usr/sbin/sshd &&
+                  test -x /usr/local/libexec/crabbox/bootstrap.sh &&
+                  test -x /usr/local/libexec/crabbox/ready
+            - check: the inherited lease login user is crabbox at uid 1000
+              id: tailscale-lease-user
+              exit_status: 0
+              command: >-
+                  test "$(getent passwd 1000 | cut -d: -f1)" = crabbox
+            - check: the inherited SSH drop-in names port 2222 and sshd parses it
+              id: tailscale-lease-sshd
+              exit_status: 0
+              command: >-
+                  grep -qx 'Port 2222' /etc/ssh/sshd_config.d/99-crabbox.conf &&
+                  /usr/sbin/sshd -t
