@@ -1,0 +1,56 @@
+# pod-crabbox-tailscale — the tailnet-joinable CachyOS lease image for the
+# Crabbox containerd provider.
+#
+# One repo per image (W5.2). The image imports the base lease image at a PINNED
+# tag, so the image tag and the git tag name the same build:
+# ghcr.io/opencharly/pod-crabbox-tailscale:<tag> is the tree tagged <tag>.
+repo: github.com/opencharly/pod-crabbox-tailscale
+defaults:
+    platform:
+        - linux/amd64
+    tag: auto
+    registry: ghcr.io/opencharly
+    build:
+        - pac
+import:
+    # The lease base image, pinned at the newest base tag. A variant imports one
+    # image and inherits the whole `/crabbox` contract (sshd on 2222, the
+    # `crabbox` login user with passwordless sudo, the read-only inputs, the
+    # shared bootstrap and the readiness hook).
+    - crabbox: '@github.com/opencharly/pod-crabbox:v2026.307.1828'
+discover:
+    - path: candy
+      recursive: true
+
+# The tailscale variant. The lease contract is inherited unchanged; this image
+# adds the `tailscale` CLI and the `tailscaled` daemon, plus the systemd drop-in
+# that forces tailscaled off UDP GSO for a TSI lease.
+pod-crabbox-tailscale:
+    candy:
+        description: |
+            The tailnet-joinable CachyOS lease image for a Crabbox `containerd`
+            lease: the base `pod-crabbox` contract (sshd on 2222, user `crabbox`
+            with passwordless sudo, the read-only `/crabbox` inputs, the shared
+            bootstrap and the readiness hook) with the Arch `tailscale` package,
+            which ships BOTH the `tailscale` CLI and the `tailscaled` daemon. The
+            daemon binary is the load-bearing half: a lease whose consumer runs
+            `exec /usr/bin/tailscaled` fails with `no such file or directory` on
+            an image that ships only the CLI. `tailscaled.service` is enabled and
+            a drop-in sets `TS_DEBUG_DISABLE_UDP_GSO=1`, the libkrunfw TSI socket
+            deadlock workaround; the setting only disables UDP GSO, so it is
+            harmless on a non-TSI lease too. Bringing the mesh up
+            (`tailscale up --authkey=…`) is a runtime concern and is never baked
+            into the image.
+        base: crabbox.pod-crabbox
+        # An imported/OCI base does not inherit the parent's distro/build values,
+        # so the CachyOS chain is declared here; the base image is itself CachyOS.
+        distro:
+            - cachyos
+            - arch
+        # PID 1 is the base image's `sshd -D`, which must run as root; the LOGIN
+        # user stays `crabbox` (uid 1000), created by the inherited candy.
+        user: root
+        uid: 0
+        gid: 0
+        candy:
+            - tailscale-lease
