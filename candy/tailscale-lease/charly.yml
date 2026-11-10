@@ -59,6 +59,17 @@ tailscale-lease:
               link: /etc/systemd/system/multi-user.target.wants/tailscaled.service
               target: /usr/lib/systemd/system/tailscaled.service
               run_as: root
+            # The direct-mode entrypoint this variant ships. 'enabling' the unit
+            # above is a filesystem fact: with `sshd -D` as PID 1 no systemd runs
+            # to follow the link, so the daemon would never start. This script
+            # starts it (with the TSI workaround in ITS OWN environment, since the
+            # drop-in only reaches a unit systemd starts) and then hands over to
+            # the base entrypoint unchanged.
+            - run: install this variant's direct-mode entrypoint that starts the daemon
+              copy: tailscale-init.sh
+              to: /usr/local/bin/crabbox-tailscale-init
+              mode: "0755"
+              run_as: root
             # ------------------------------------------------------------------
             # The variant's own surface.
             # ------------------------------------------------------------------
@@ -92,6 +103,13 @@ tailscale-lease:
             # ------------------------------------------------------------------
             # The inherited lease contract, probed at THIS image's boundary.
             # ------------------------------------------------------------------
+            - check: this variant's entrypoint is installed and starts the daemon before the base one
+              id: tailscale-entrypoint
+              exit_status: 0
+              command: >-
+                  test -x /usr/local/bin/crabbox-tailscale-init &&
+                  grep -q 'TS_DEBUG_DISABLE_UDP_GSO=1' /usr/local/bin/crabbox-tailscale-init &&
+                  grep -q 'exec /usr/local/bin/crabbox-lease-init' /usr/local/bin/crabbox-tailscale-init
             - check: the inherited lease SSH contract is present (sshd, bootstrap, readiness hook)
               id: tailscale-lease-binaries
               exit_status: 0
