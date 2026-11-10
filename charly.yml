@@ -65,3 +65,82 @@ pod-crabbox-tailscale:
             - /usr/local/bin/crabbox-tailscale-init
         candy:
             - tailscale-lease
+
+# =============================================================================
+# check-pod-crabbox-tailscale-contract — the disposable R10 bed for this image.
+#
+# WHY THERE IS NO "PERFORM" STEP. Every other pod-crabbox bed has the three-step
+# ABSENCE -> PERFORM -> PRESENCE shape because its subject starts LATE: the lease
+# unit consumes the inputs and only then does the engine or cluster come up, so
+# an ABSENCE step has something to be absent about. This image's subject starts
+# at the ENTRYPOINT — there is no bootstrap gate between container start and the
+# daemon — so by the time any live step runs, tailscaled is already up. Getting a
+# step 1 would mean inventing a gate, i.e. changing product behaviour for a test,
+# so the bed does not.
+#
+# THE DISCRIMINATOR LIVES OUTSIDE THE BED and is stated with it: on the base
+# image (opencharly/pod-crabbox) the daemon binary, the shared starter and the
+# drop-in are all absent, so every assertion below FAILS there. A PRESENCE-only
+# bed whose detector is proven to fail on the base image is a gate; without that
+# control it would not be.
+#
+# THE TAILNET JOIN IS NOT ASSERTED, deliberately: `tailscale up` needs an auth
+# key and a lease venue does not carry one (R8 — a live boundary runs live or
+# skips visibly, never mocked). What IS asserted is the part the image owns.
+check-pod-crabbox-tailscale-contract:
+    pod:
+        image: pod-crabbox-tailscale
+        disposable: true
+        lifecycle: test
+        plan:
+            # IDENTITY, NOT A SUBSTRING. Round 1 caught the first version matching the
+            # CHECKING SHELL: its own argv contains the string `tailscaled`, so the loop
+            # read the shell's environ and could report success with NO daemon running.
+            # Exact identity is `comm`, the kernel's own process name, and the detecting
+            # shell is excluded by pid as well.
+            - check: the daemon is running with the TSI workaround in its own environment
+              id: tailscale-daemon-running
+              exit_status: 0
+              command: |
+                set -eu
+                found=0
+                for p in /proc/[0-9]*; do
+                  pid="${p#/proc/}"
+                  [ "$pid" = "$$" ] && continue
+                  [ -r "$p/comm" ] || continue
+                  [ "$(cat "$p/comm")" = tailscaled ] || continue
+                  if ! grep -qa 'TS_DEBUG_DISABLE_UDP_GSO=1' "$p/environ"; then
+                    echo 'tailscaled is running WITHOUT the TSI workaround in its environment' >&2
+                    exit 1
+                  fi
+                  found=$((found + 1))
+                done
+                if [ "$found" -lt 1 ]; then
+                  echo 'no tailscaled process is running: the entrypoint did not start the daemon' >&2
+                  exit 1
+                fi
+            # THE DETECTOR MUST BE ABLE TO FAIL. Same loop, an identity that cannot exist:
+            # if this step ever reports success, the detector is matching something other
+            # than the process it names and the assertion above proves nothing.
+            - check: the daemon detector can fail, so the assertion above is not vacuous
+              id: tailscale-detector-can-fail
+              command: |
+                set -eu
+                probe=tailscale-does-not-exist
+                hit=0
+                for p in /proc/[0-9]*; do
+                  [ -r "$p/comm" ] || continue
+                  [ "$(cat "$p/comm")" = "$probe" ] && hit=1
+                done
+                if [ "$hit" = 1 ]; then
+                  echo 'the detector matched a process it should never match' >&2
+                  exit 0
+                fi
+                exit 1
+              exit_status: 1
+            - check: the daemon listens on the socket the entrypoint gives it
+              id: tailscale-daemon-socket
+              exit_status: 0
+              command: |
+                set -eu
+                test -S /run/tailscale/tailscaled.sock
