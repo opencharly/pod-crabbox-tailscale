@@ -35,10 +35,14 @@ pod-crabbox-tailscale:
             which ships BOTH the `tailscale` CLI and the `tailscaled` daemon. The
             daemon binary is the load-bearing half: a lease whose consumer runs
             `exec /usr/bin/tailscaled` fails with `no such file or directory` on
-            an image that ships only the CLI. `tailscaled.service` is enabled and
-            a drop-in sets `TS_DEBUG_DISABLE_UDP_GSO=1`, the libkrunfw TSI socket
-            deadlock workaround; the setting only disables UDP GSO, so it is
-            harmless on a non-TSI lease too. Bringing the mesh up
+            an image that ships only the CLI. The daemon is STARTED by this
+            image's own entrypoint (`/usr/local/bin/crabbox-tailscale-init`),
+            which exports `TS_DEBUG_DISABLE_UDP_GSO=1` — the libkrunfw TSI socket
+            deadlock workaround — into the daemon's environment and then hands
+            over to the base entrypoint; `tailscaled.service` is also enabled with
+            the same variable through a drop-in, for a venue that runs systemd as
+            PID 1. The setting only disables UDP GSO, so it is harmless on a
+            non-TSI lease too. Bringing the mesh up
             (`tailscale up --authkey=…`) is a runtime concern and is never baked
             into the image.
         base: crabbox.pod-crabbox
@@ -52,5 +56,12 @@ pod-crabbox-tailscale:
         user: root
         uid: 0
         gid: 0
+        # The variant's own entrypoint: it starts `tailscaled` (with the TSI
+        # workaround in the daemon's own environment) and then hands over to the
+        # base `/usr/local/bin/crabbox-lease-init`, which applies the read-only
+        # `/crabbox` inputs and `exec`s `sshd -D`. Declaring it here is what makes
+        # the daemon actually RUN on the venue this image declares.
+        entrypoint:
+            - /usr/local/bin/crabbox-tailscale-init
         candy:
             - tailscale-lease

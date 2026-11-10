@@ -59,6 +59,25 @@ tailscale-lease:
               link: /etc/systemd/system/multi-user.target.wants/tailscaled.service
               target: /usr/lib/systemd/system/tailscaled.service
               run_as: root
+            # The direct-mode entrypoint this variant ships. 'enabling' the unit
+            # above is a filesystem fact: with `sshd -D` as PID 1 no systemd runs
+            # to follow the link, so the daemon would never start. This script
+            # starts it (with the TSI workaround in ITS OWN environment, since the
+            # drop-in only reaches a unit systemd starts) and then hands over to
+            # the base entrypoint unchanged.
+            - run: install this variant's direct-mode entrypoint that starts the daemon
+              copy: tailscale-init.sh
+              to: /usr/local/bin/crabbox-tailscale-init
+              mode: "0755"
+              run_as: root
+            # The ONE definition of how the daemon starts. The entrypoint runs it
+            # and the check below runs the SAME file, so the proven command and
+            # the shipped command cannot drift apart.
+            - run: install the shared daemon starter both the entrypoint and the check run
+              copy: tailscaled-start.sh
+              to: /usr/local/libexec/crabbox/tailscaled-start
+              mode: "0755"
+              run_as: root
             # ------------------------------------------------------------------
             # The variant's own surface.
             # ------------------------------------------------------------------
@@ -92,6 +111,40 @@ tailscale-lease:
             # ------------------------------------------------------------------
             # The inherited lease contract, probed at THIS image's boundary.
             # ------------------------------------------------------------------
+            # THE DAEMON ACTUALLY STARTING, not merely being installed. The
+            # entrypoint check below only proves a file exists; a script with a
+            # wrong binary path or a crash on start would pass it. This starts the
+            # daemon the same way the entrypoint does and asserts it is alive and
+            # listening on its socket. `--tun=userspace-networking` is what lets it
+            # run where no TUN device is attached; the point here is that the
+            # process starts and stays up.
+            # Runs the SHIPPED starter — the same file the entrypoint runs — and
+            # asserts the daemon stays up and its socket appears. A check that
+            # repeated the invocation inline could drift from the entrypoint, and
+            # round 1 caught exactly that: an inline command with different flags
+            # and paths proved a daemon that the shipped entrypoint never started.
+            - check: the shared starter launches the daemon and it stays up on its own socket
+              id: tailscale-daemon-starts
+              exit_status: 0
+              command: |
+                set -eu
+                /usr/local/libexec/crabbox/tailscaled-start &
+                daemon_pid=$!
+                for _ in $(seq 1 40); do
+                  kill -0 "$daemon_pid" 2>/dev/null || { echo 'the starter exited without a daemon' >&2; exit 1; }
+                  [ -S /run/tailscale/tailscaled.sock ] && break
+                  sleep 0.25
+                done
+                test -S /run/tailscale/tailscaled.sock
+                kill "$daemon_pid" 2>/dev/null || true
+            - check: this variant's entrypoint is installed and starts the daemon before the base one
+              id: tailscale-entrypoint
+              exit_status: 0
+              command: >-
+                  test -x /usr/local/bin/crabbox-tailscale-init &&
+                  test -x /usr/local/libexec/crabbox/tailscaled-start &&
+                  grep -q 'crabbox/tailscaled-start' /usr/local/bin/crabbox-tailscale-init &&
+                  grep -q 'exec /usr/local/bin/crabbox-lease-init' /usr/local/bin/crabbox-tailscale-init
             - check: the inherited lease SSH contract is present (sshd, bootstrap, readiness hook)
               id: tailscale-lease-binaries
               exit_status: 0
