@@ -93,6 +93,11 @@ check-pod-crabbox-tailscale-contract:
         disposable: true
         lifecycle: test
         plan:
+            # IDENTITY, NOT A SUBSTRING. Round 1 caught the first version matching the
+            # CHECKING SHELL: its own argv contains the string `tailscaled`, so the loop
+            # read the shell's environ and could report success with NO daemon running.
+            # Exact identity is `comm`, the kernel's own process name, and the detecting
+            # shell is excluded by pid as well.
             - check: the daemon is running with the TSI workaround in its own environment
               id: tailscale-daemon-running
               exit_status: 0
@@ -100,18 +105,39 @@ check-pod-crabbox-tailscale-contract:
                 set -eu
                 found=0
                 for p in /proc/[0-9]*; do
-                  [ -r "$p/cmdline" ] || continue
-                  grep -qa tailscaled "$p/cmdline" || continue
+                  pid="${p#/proc/}"
+                  [ "$pid" = "$$" ] && continue
+                  [ -r "$p/comm" ] || continue
+                  [ "$(cat "$p/comm")" = tailscaled ] || continue
                   if ! grep -qa 'TS_DEBUG_DISABLE_UDP_GSO=1' "$p/environ"; then
                     echo 'tailscaled is running WITHOUT the TSI workaround in its environment' >&2
                     exit 1
                   fi
-                  found=1
+                  found=$((found + 1))
                 done
-                if [ "$found" != 1 ]; then
+                if [ "$found" -lt 1 ]; then
                   echo 'no tailscaled process is running: the entrypoint did not start the daemon' >&2
                   exit 1
                 fi
+            # THE DETECTOR MUST BE ABLE TO FAIL. Same loop, an identity that cannot exist:
+            # if this step ever reports success, the detector is matching something other
+            # than the process it names and the assertion above proves nothing.
+            - check: the daemon detector can fail, so the assertion above is not vacuous
+              id: tailscale-detector-can-fail
+              command: |
+                set -eu
+                probe=tailscale-does-not-exist
+                hit=0
+                for p in /proc/[0-9]*; do
+                  [ -r "$p/comm" ] || continue
+                  [ "$(cat "$p/comm")" = "$probe" ] && hit=1
+                done
+                if [ "$hit" = 1 ]; then
+                  echo 'the detector matched a process it should never match' >&2
+                  exit 0
+                fi
+                exit 1
+              exit_status: 1
             - check: the daemon listens on the socket the entrypoint gives it
               id: tailscale-daemon-socket
               exit_status: 0
