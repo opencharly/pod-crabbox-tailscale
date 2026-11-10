@@ -70,6 +70,14 @@ tailscale-lease:
               to: /usr/local/bin/crabbox-tailscale-init
               mode: "0755"
               run_as: root
+            # The ONE definition of how the daemon starts. The entrypoint runs it
+            # and the check below runs the SAME file, so the proven command and
+            # the shipped command cannot drift apart.
+            - run: install the shared daemon starter both the entrypoint and the check run
+              copy: tailscaled-start.sh
+              to: /usr/local/libexec/crabbox/tailscaled-start
+              mode: "0755"
+              run_as: root
             # ------------------------------------------------------------------
             # The variant's own surface.
             # ------------------------------------------------------------------
@@ -110,27 +118,32 @@ tailscale-lease:
             # listening on its socket. `--tun=userspace-networking` is what lets it
             # run where no TUN device is attached; the point here is that the
             # process starts and stays up.
-            - check: the daemon starts and stays up when it is launched the way the entrypoint launches it
+            # Runs the SHIPPED starter — the same file the entrypoint runs — and
+            # asserts the daemon stays up and its socket appears. A check that
+            # repeated the invocation inline could drift from the entrypoint, and
+            # round 1 caught exactly that: an inline command with different flags
+            # and paths proved a daemon that the shipped entrypoint never started.
+            - check: the shared starter launches the daemon and it stays up on its own socket
               id: tailscale-daemon-starts
               exit_status: 0
               command: |
                 set -eu
-                /usr/bin/tailscaled --tun=userspace-networking \
-                    --state=/tmp/ts-verify.state --socket=/tmp/ts-verify.sock &
+                /usr/local/libexec/crabbox/tailscaled-start &
                 daemon_pid=$!
                 for _ in $(seq 1 40); do
-                  kill -0 "$daemon_pid" 2>/dev/null || { echo 'tailscaled exited immediately' >&2; exit 1; }
-                  [ -S /tmp/ts-verify.sock ] && break
+                  kill -0 "$daemon_pid" 2>/dev/null || { echo 'the starter exited without a daemon' >&2; exit 1; }
+                  [ -S /run/tailscale/tailscaled.sock ] && break
                   sleep 0.25
                 done
-                test -S /tmp/ts-verify.sock
+                test -S /run/tailscale/tailscaled.sock
                 kill "$daemon_pid" 2>/dev/null || true
             - check: this variant's entrypoint is installed and starts the daemon before the base one
               id: tailscale-entrypoint
               exit_status: 0
               command: >-
                   test -x /usr/local/bin/crabbox-tailscale-init &&
-                  grep -q 'TS_DEBUG_DISABLE_UDP_GSO=1' /usr/local/bin/crabbox-tailscale-init &&
+                  test -x /usr/local/libexec/crabbox/tailscaled-start &&
+                  grep -q 'crabbox/tailscaled-start' /usr/local/bin/crabbox-tailscale-init &&
                   grep -q 'exec /usr/local/bin/crabbox-lease-init' /usr/local/bin/crabbox-tailscale-init
             - check: the inherited lease SSH contract is present (sshd, bootstrap, readiness hook)
               id: tailscale-lease-binaries
