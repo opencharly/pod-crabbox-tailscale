@@ -103,6 +103,28 @@ tailscale-lease:
             # ------------------------------------------------------------------
             # The inherited lease contract, probed at THIS image's boundary.
             # ------------------------------------------------------------------
+            # THE DAEMON ACTUALLY STARTING, not merely being installed. The
+            # entrypoint check below only proves a file exists; a script with a
+            # wrong binary path or a crash on start would pass it. This starts the
+            # daemon the same way the entrypoint does and asserts it is alive and
+            # listening on its socket. `--tun=userspace-networking` is what lets it
+            # run where no TUN device is attached; the point here is that the
+            # process starts and stays up.
+            - check: the daemon starts and stays up when it is launched the way the entrypoint launches it
+              id: tailscale-daemon-starts
+              exit_status: 0
+              command: |
+                set -eu
+                /usr/bin/tailscaled --tun=userspace-networking \
+                    --state=/tmp/ts-verify.state --socket=/tmp/ts-verify.sock &
+                daemon_pid=$!
+                for _ in $(seq 1 40); do
+                  kill -0 "$daemon_pid" 2>/dev/null || { echo 'tailscaled exited immediately' >&2; exit 1; }
+                  [ -S /tmp/ts-verify.sock ] && break
+                  sleep 0.25
+                done
+                test -S /tmp/ts-verify.sock
+                kill "$daemon_pid" 2>/dev/null || true
             - check: this variant's entrypoint is installed and starts the daemon before the base one
               id: tailscale-entrypoint
               exit_status: 0
